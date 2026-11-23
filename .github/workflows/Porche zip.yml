@@ -15,10 +15,21 @@ jobs:
       - name: Baixar repositório
         uses: actions/checkout@v4
 
-      - name: Extrair ZIP na pasta original
+      - name: Localizar e extrair ZIP
         run: |
+          ZIP_PATH=$(find . -type f -name "porsche-911-gt3-rs.zip" -not -path "./.git/*" -not -path "./porsche-original/*" -print -quit)
+
+          if [ -z "$ZIP_PATH" ]; then
+            echo "ERRO: ZIP não encontrado no repositório."
+            find . -maxdepth 3 -type f
+            exit 1
+          fi
+
+          echo "ZIP encontrado: $ZIP_PATH"
+          unzip -t "$ZIP_PATH"
+
           mkdir -p porsche-original
-          unzip -o porsche-911-gt3-rs.zip -d porsche-original/
+          unzip -o "$ZIP_PATH" -d porsche-original/
 
       - name: Salvar arquivos no GitHub
         run: |
