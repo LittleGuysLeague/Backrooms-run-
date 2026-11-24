@@ -19,42 +19,7 @@ jobs:
 
       - name: Conferir arquivos necessarios
         run: |
-          test -f "01_070715SSCR_HD.glb"
-          test -f "car.unitypackage"
-
-      - name: Extrair FBX original do Unity
-        run: |
-          python3 - <<'PY'
-          import tarfile, os, shutil
-
-          package = "car.unitypackage"
-          os.makedirs("temp", exist_ok=True)
-          encontrado = False
-
-          with tarfile.open(package, "r:gz") as tar:
-              for member in tar.getmembers():
-                  if member.name.endswith("/pathname"):
-                      f = tar.extractfile(member)
-                      if not f:
-                          continue
-
-                      caminho = f.read().decode("utf-8", "ignore").strip()
-
-                      if caminho == "Assets/01_070715SSCR_HD.fbx":
-                          folder = member.name.rsplit("/", 1)[0]
-                          asset = tar.extractfile(folder + "/asset")
-
-                          if asset:
-                              with open("temp/reference.fbx", "wb") as out:
-                                  shutil.copyfileobj(asset, out)
-
-                              encontrado = True
-                              print("FBX original encontrado!")
-                              break
-
-          if not encontrado:
-              raise SystemExit("FBX original nao encontrado no pacote.")
-          PY
+          test -s "01_070715SSCR_HD.glb"
 
       - name: Criar script de montagem
         run: |
@@ -64,7 +29,6 @@ jobs:
 
           root = os.getcwd()
           glb = os.path.join(root, "01_070715SSCR_HD.glb")
-          fbx = os.path.join(root, "temp/reference.fbx")
           output = os.path.join(root, "resultado")
 
           os.makedirs(output, exist_ok=True)
@@ -72,12 +36,9 @@ jobs:
           if not os.path.isfile(glb):
               raise RuntimeError("GLB corrigido nao encontrado.")
 
-          if not os.path.isfile(fbx):
-              raise RuntimeError("FBX de referencia nao encontrado.")
-
           bpy.ops.wm.read_factory_settings(use_empty=True)
 
-          # Importa o GLB corrigido: ele sera a geometria final.
+          # Importa o GLB corrigido.
           bpy.ops.import_scene.gltf(filepath=glb)
 
           glb_objects = [
@@ -88,18 +49,6 @@ jobs:
           if not glb_objects:
               raise RuntimeError("Nenhuma malha foi encontrada no GLB.")
 
-          # Guarda os objetos originais do GLB.
-          glb_object_ids = {obj.as_pointer() for obj in glb_objects}
-
-          # Importa o FBX apenas como referencia.
-          bpy.ops.import_scene.fbx(filepath=fbx)
-
-          fbx_objects = [
-              obj for obj in bpy.context.scene.objects
-              if obj.type == "MESH"
-              and obj.as_pointer() not in glb_object_ids
-          ]
-
           # Procura as texturas disponiveis no repositorio.
           texture_files = {}
 
@@ -107,8 +56,13 @@ jobs:
               if filename.lower().endswith((".png", ".jpg", ".jpeg")):
                   texture_files[filename.lower()] = os.path.join(root, filename)
 
-          # Corrige caminhos de imagens e empacota as encontradas.
+          # Corrige caminhos de imagens ja utilizadas pelos materiais.
+          packed_images = 0
+
           for image in bpy.data.images:
+              if image.source != "FILE":
+                  continue
+
               basename = os.path.basename(image.filepath).lower()
 
               if basename in texture_files:
@@ -118,37 +72,13 @@ jobs:
                   except Exception:
                       pass
 
-              if image.source == "FILE":
-                  try:
-                      image.pack()
-                  except Exception:
-                      pass
+              try:
+                  image.pack()
+                  packed_images += 1
+              except Exception:
+                  pass
 
-          # Conta os materiais de referencia encontrados no FBX.
-          reference_materials = set()
-
-          for obj in fbx_objects:
-              for slot in obj.material_slots:
-                  if slot.material:
-                      reference_materials.add(slot.material.name)
-
-          # Remove as malhas FBX: somente a geometria GLB sera exportada.
-          for obj in fbx_objects:
-              bpy.data.objects.remove(obj, do_unlink=True)
-
-          report = [
-              "Montagem do Porsche 911 GT3 RS",
-              f"Objetos GLB mantidos: {len(glb_objects)}",
-              f"Objetos FBX de referencia: {len(fbx_objects)}",
-              f"Materiais encontrados no FBX: {len(reference_materials)}",
-              f"Arquivos de textura encontrados: {len(texture_files)}",
-              "",
-              "O GLB corrigido foi mantido como geometria final.",
-              "O FBX foi usado como referencia.",
-              "Os materiais nao foram associados automaticamente.",
-              "A correspondencia das texturas ainda precisa ser feita."
-          ]
-
+          # Exporta somente a geometria do GLB corrigido.
           destino = os.path.join(output, "porsche-candidato.glb")
 
           bpy.ops.export_scene.gltf(
@@ -159,6 +89,17 @@ jobs:
 
           if not os.path.isfile(destino) or os.path.getsize(destino) == 0:
               raise RuntimeError("O GLB final nao foi criado corretamente.")
+
+          report = [
+              "Montagem do Porsche 911 GT3 RS",
+              f"Malhas mantidas: {len(glb_objects)}",
+              f"Texturas encontradas no repositorio: {len(texture_files)}",
+              f"Imagens empacotadas: {packed_images}",
+              "",
+              "Geometria original do GLB preservada.",
+              "Nenhum FBX foi importado.",
+              "Nenhuma associacao nova de textura foi criada automaticamente."
+          ]
 
           with open(os.path.join(output, "relatorio-porsche.txt"), "w") as f:
               f.write("\n".join(report))
