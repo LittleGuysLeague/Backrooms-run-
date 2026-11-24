@@ -1,5 +1,5 @@
 
-name: Montar Porsche 911 GT3 RS
+name: Montar Porsche 911 GT3 RS completo
 
 on:
   workflow_dispatch:
@@ -9,118 +9,411 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Baixar arquivos do repositorio
+      - name: Baixar repositorio
         uses: actions/checkout@v4
 
-      - name: Instalar Blender e NumPy
+      - name: Instalar Blender
         run: |
           sudo apt-get update
-          sudo apt-get install -y blender python3-numpy
+          sudo apt-get install -y blender
 
-      - name: Conferir arquivos necessarios
+      - name: Conferir arquivos
         run: |
           test -s "01_070715SSCR_HD.glb"
+          test -s "unity-extraido/bc865735592a8f04499d69b0d3b57c4d/asset"
+          test -s "070715SSCR .png"
+          test -s "070715SSCR_interior.png"
+          test -s "wheelstyle_color1_d6.png"
+          test -s "carbonfiber1_d1.png"
+          test -s "GR3D_RaceDriver_d3.png"
+          test -s "shadow-cars.png"
 
       - name: Criar script de montagem
         run: |
           cat > montar.py <<'PY'
           import bpy
           import os
+          import re
 
-          root = os.getcwd()
-          glb = os.path.join(root, "01_070715SSCR_HD.glb")
-          output = os.path.join(root, "resultado")
+          ROOT = os.getcwd()
+          OUTPUT = os.path.join(ROOT, "resultado")
+          GLB = os.path.join(ROOT, "01_070715SSCR_HD.glb")
+          FBX = os.path.join(
+              ROOT,
+              "unity-extraido/bc865735592a8f04499d69b0d3b57c4d/asset"
+          )
+          SCALE = 2.58
+          EXPECTED_MESHES = 28
 
-          os.makedirs(output, exist_ok=True)
+          TEXTURES = [
+              "070715SSCR .png",
+              "070715SSCR_interior.png",
+              "wheelstyle_color1_d6.png",
+              "carbonfiber1_d1.png",
+              "GR3D_RaceDriver_d3.png",
+              "shadow-cars.png"
+          ]
 
-          if not os.path.isfile(glb):
-              raise RuntimeError("GLB corrigido nao encontrado.")
+          os.makedirs(OUTPUT, exist_ok=True)
+
+          def clean_name(value):
+              return re.sub(
+                  r"[^a-z0-9]",
+                  "",
+                  (value or "").lower()
+              )
+
+          def image_nodes(material):
+              if not material or not material.use_nodes:
+                  return []
+              return [
+                  node for node in material.node_tree.nodes
+                  if node.type == "TEX_IMAGE" and node.image
+              ]
+
+          def has_texture(material):
+              return bool(image_nodes(material))
+
+          def get_materials(obj):
+              return [
+                  material for material in obj.data.materials
+                  if material is not None
+              ]
+
+          def log(message):
+              print("[PORSCHE] " + str(message))
+
+          # 1. Verificar os arquivos de entrada.
+          for path in [GLB, FBX]:
+              if not os.path.isfile(path):
+                  raise RuntimeError(
+                      "Arquivo obrigatorio nao encontrado: " + path
+                  )
+
+          for filename in TEXTURES:
+              path = os.path.join(ROOT, filename)
+              if not os.path.isfile(path):
+                  raise RuntimeError(
+                      "Textura ausente: " + filename
+                  )
 
           bpy.ops.wm.read_factory_settings(use_empty=True)
 
-          # Importa o GLB corrigido.
-          bpy.ops.import_scene.gltf(filepath=glb)
+          # 2. Importar o GLB otimizado.
+          log("Importando geometria otimizada...")
+          bpy.ops.import_scene.gltf(filepath=GLB)
 
-          glb_objects = [
-              obj for obj in bpy.context.scene.objects
+          glb_objects = list(bpy.context.scene.objects)
+          glb_meshes = [
+              obj for obj in glb_objects if obj.type == "MESH"
+          ]
+
+          if len(glb_meshes) != EXPECTED_MESHES:
+              raise RuntimeError(
+                  "Esperadas 28 malhas no GLB, encontradas: "
+                  + str(len(glb_meshes))
+              )
+
+          log("28 malhas do GLB confirmadas.")
+
+          # 3. Importar FBX somente como referencia.
+          log("Importando FBX de referencia...")
+          before_fbx = set(bpy.data.objects)
+
+          bpy.ops.import_scene.fbx(
+              filepath=FBX,
+              use_image_search=True
+          )
+
+          fbx_objects = [
+              obj for obj in bpy.data.objects
+              if obj not in before_fbx
+          ]
+
+          fbx_meshes = [
+              obj for obj in fbx_objects
               if obj.type == "MESH"
           ]
 
-          if not glb_objects:
-              raise RuntimeError("Nenhuma malha foi encontrada no GLB.")
+          log("Malhas encontradas no FBX: " + str(len(fbx_meshes)))
 
-          # Procura as texturas disponiveis no repositorio.
-          texture_files = {}
+          # 4. Criar indice de nomes do FBX.
+          fbx_index = {}
 
-          for filename in os.listdir(root):
-              if filename.lower().endswith((".png", ".jpg", ".jpeg")):
-                  texture_files[filename.lower()] = os.path.join(root, filename)
+          for obj in fbx_meshes:
+              key = clean_name(obj.name)
+              fbx_index.setdefault(key, []).append(obj)
 
-          # Corrige caminhos de imagens ja utilizadas pelos materiais.
-          packed_images = 0
+          # 5. Transferir materiais somente quando o nome
+          # da malha corresponder exatamente e sem ambiguidades.
+          matched = 0
+          copied_slots = 0
+          ambiguous = []
+          unmatched = []
+
+          for obj in glb_meshes:
+              key = clean_name(obj.name)
+              candidates = fbx_index.get(key, [])
+
+              if len(candidates) == 1:
+                  reference = candidates[0]
+                  materials = get_materials(reference)
+
+                  if materials:
+                      obj.data.materials.clear()
+
+                      for material in materials:
+                          obj.data.materials.append(material)
+                          copied_slots += 1
+
+                      matched += 1
+                  else:
+                      unmatched.append(
+                          obj.name + " (FBX sem materiais)"
+                      )
+
+              elif len(candidates) > 1:
+                  ambiguous.append(obj.name)
+
+              else:
+                  unmatched.append(obj.name)
+
+          # 6. Corrigir caminhos das imagens importadas.
+          texture_paths = {
+              clean_name(filename): os.path.join(ROOT, filename)
+              for filename in TEXTURES
+          }
+
+          relinked = 0
+          missing_images = []
 
           for image in bpy.data.images:
               if image.source != "FILE":
                   continue
 
-              basename = os.path.basename(image.filepath).lower()
+              candidates = [
+                  image.name,
+                  os.path.basename(bpy.path.abspath(image.filepath)),
+                  os.path.basename(image.filepath)
+              ]
 
-              if basename in texture_files:
-                  image.filepath = texture_files[basename]
+              found_path = None
+
+              for candidate in candidates:
+                  key = clean_name(candidate)
+
+                  if key in texture_paths:
+                      found_path = texture_paths[key]
+                      break
+
+              if found_path:
+                  image.filepath = found_path
+
                   try:
                       image.reload()
-                  except Exception:
-                      pass
+                      relinked += 1
+                  except Exception as error:
+                      missing_images.append(
+                          image.name + ": " + str(error)
+                      )
+
+          # 7. Verificar os arquivos de textura.
+          valid_textures = []
+          invalid_textures = []
+
+          for filename in TEXTURES:
+              path = os.path.join(ROOT, filename)
+
+              try:
+                  image = bpy.data.images.load(
+                      path,
+                      check_existing=True
+                  )
+
+                  if image.size[0] > 0 and image.size[1] > 0:
+                      valid_textures.append(filename)
+                  else:
+                      invalid_textures.append(filename)
+
+              except Exception as error:
+                  invalid_textures.append(
+                      filename + ": " + str(error)
+                  )
+
+          # 8. Remover completamente os objetos de referencia.
+          # A geometria final continua sendo exclusivamente do GLB.
+          for obj in fbx_objects:
+              if obj.name in bpy.data.objects:
+                  bpy.data.objects.remove(obj, do_unlink=True)
+
+          # 9. Contar materiais que realmente possuem imagens.
+          textured_materials = 0
+          plain_materials = 0
+
+          for obj in glb_meshes:
+              for material in get_materials(obj):
+                  if has_texture(material):
+                      textured_materials += 1
+                  else:
+                      plain_materials += 1
+
+          # 10. Aplicar escala uniforme de 2,58x.
+          # A transformacao e feita em torno da origem do mundo.
+          log("Aplicando escala de 2,58x...")
+
+          scene = bpy.context.scene
+          scene.cursor.location = (0, 0, 0)
+          scene.tool_settings.transform_pivot_point = "CURSOR"
+
+          bpy.ops.object.select_all(action="DESELECT")
+
+          for obj in glb_objects:
+              if obj.name in bpy.data.objects:
+                  obj.select_set(True)
+
+          bpy.context.view_layer.objects.active = glb_meshes[0]
+
+          bpy.ops.transform.resize(
+              value=(SCALE, SCALE, SCALE)
+          )
+
+          bpy.ops.object.select_all(action="DESELECT")
+
+          # 11. Empacotar imagens utilizadas pelos materiais.
+          packed = 0
+
+          for image in bpy.data.images:
+              if image.source != "FILE":
+                  continue
+
+              if not any(
+                  node.image == image
+                  for material in bpy.data.materials
+                  if material.use_nodes
+                  for node in material.node_tree.nodes
+                  if node.type == "TEX_IMAGE"
+              ):
+                  continue
 
               try:
                   image.pack()
-                  packed_images += 1
-              except Exception:
-                  pass
+                  packed += 1
+              except Exception as error:
+                  missing_images.append(
+                      image.name + " (falha ao empacotar): "
+                      + str(error)
+                  )
 
-          # Exporta somente a geometria do GLB corrigido.
-          destino = os.path.join(output, "porsche-candidato.glb")
-
-          bpy.ops.export_scene.gltf(
-              filepath=destino,
-              export_format="GLB",
-              export_materials="EXPORT"
+          # 12. Exportar o GLB final.
+          destination = os.path.join(
+              OUTPUT,
+              "porsche-candidato-texturizado.glb"
           )
 
-          if not os.path.isfile(destino) or os.path.getsize(destino) == 0:
-              raise RuntimeError("O GLB final nao foi criado corretamente.")
+          log("Exportando GLB final...")
 
+          bpy.ops.export_scene.gltf(
+              filepath=destination,
+              export_format="GLB",
+              export_materials="EXPORT",
+              export_image_format="AUTO"
+          )
+
+          if (
+              not os.path.isfile(destination)
+              or os.path.getsize(destination) < 1000
+          ):
+              raise RuntimeError("Falha na exportacao do GLB.")
+
+          # 13. Gerar relatorio.
           report = [
-              "Montagem do Porsche 911 GT3 RS",
-              f"Malhas mantidas: {len(glb_objects)}",
-              f"Texturas encontradas no repositorio: {len(texture_files)}",
-              f"Imagens empacotadas: {packed_images}",
+              "PORSCHE 911 GT3 RS - RELATORIO DE MONTAGEM",
               "",
-              "Geometria original do GLB preservada.",
-              "Nenhum FBX foi importado.",
-              "Nenhuma associacao nova de textura foi criada automaticamente."
+              "GEOMETRIA",
+              "Malhas finais: " + str(len(glb_meshes)),
+              "Malhas de referencia FBX: " + str(len(fbx_meshes)),
+              "Correspondencias exatas: " + str(matched),
+              "Slots de materiais transferidos: " + str(copied_slots),
+              "Escala aplicada: " + str(SCALE) + "x",
+              "",
+              "TEXTURAS",
+              "Arquivos validos: " + str(len(valid_textures))
+              + "/" + str(len(TEXTURES)),
+              "Imagens relinkadas: " + str(relinked),
+              "Materiais com imagens: " + str(textured_materials),
+              "Materiais sem imagens: " + str(plain_materials),
+              "Imagens empacotadas: " + str(packed),
+              "",
+              "TEXTURAS ENCONTRADAS:"
           ]
 
-          with open(os.path.join(output, "relatorio-porsche.txt"), "w") as f:
-              f.write("\n".join(report))
+          report.extend(
+              ["  OK: " + name for name in valid_textures]
+          )
+
+          report.append("")
+          report.append("TEXTURAS INVALIDAS:")
+          report.extend(
+              ["  ERRO: " + name for name in invalid_textures]
+              or ["  Nenhuma."]
+          )
+
+          report.append("")
+          report.append("MALHAS SEM CORRESPONDENCIA:")
+          report.extend(
+              ["  " + name for name in unmatched]
+              or ["  Nenhuma."]
+          )
+
+          report.append("")
+          report.append("CORRESPONDENCIAS AMBIGUAS:")
+          report.extend(
+              ["  " + name for name in ambiguous]
+              or ["  Nenhuma."]
+          )
+
+          report.append("")
+          report.append("PROBLEMAS COM IMAGENS:")
+          report.extend(
+              ["  " + name for name in missing_images]
+              or ["  Nenhum."]
+          )
+
+          report.extend([
+              "",
+              "A geometria final veio exclusivamente do GLB otimizado.",
+              "O FBX foi usado somente como referencia de materiais.",
+              "Texturas nao foram atribuidas a pecas por adivinhacao.",
+              "Colisores nao foram criados nesta etapa.",
+              "A inspecao visual do modelo final ainda e necessaria.",
+              "",
+              "Arquivo: porsche-candidato-texturizado.glb"
+          ])
+
+          report_path = os.path.join(
+              OUTPUT,
+              "relatorio-porsche-final.txt"
+          )
+
+          with open(report_path, "w", encoding="utf-8") as file:
+              file.write("\n".join(report))
 
           print("\n".join(report))
-          print("EXPORTACAO CONCLUIDA COM SUCESSO!")
+          log("MONTAGEM CONCLUIDA.")
           PY
 
-      - name: Montar e exportar Porsche
+      - name: Montar e exportar
         run: |
           blender -b --python-exit-code 1 -P montar.py
 
-      - name: Conferir resultado
+      - name: Validar resultado
         run: |
-          test -s resultado/porsche-candidato.glb
-          test -s resultado/relatorio-porsche.txt
-          echo "Arquivos gerados corretamente!"
+          test -s resultado/porsche-candidato-texturizado.glb
+          test -s resultado/relatorio-porsche-final.txt
 
-      - name: Disponibilizar resultado
+      - name: Disponibilizar arquivos
         uses: actions/upload-artifact@v4
         with:
-          name: Porsche-911-GT3-RS
+          name: Porsche-911-GT3-RS-final
           path: resultado/
           if-no-files-found: error
