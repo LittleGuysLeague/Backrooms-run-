@@ -15,7 +15,8 @@ jobs:
       - name: Instalar Blender
         run: |
           sudo apt-get update
-          sudo apt-get install -y blender
+          sudo apt-get install -y blender python3-numpy
+
 
       - name: Conferir arquivos
         run: |
