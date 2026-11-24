@@ -1,0 +1,35 @@
+
+name: Extrair car.unitypackage
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extrair:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+
+      - name: Extrair pacote Unity
+        run: |
+          mkdir -p unity-extraido
+          tar -xzf car.unitypackage -C unity-extraido
+
+      - name: Criar relatório dos arquivos
+        run: |
+          find unity-extraido -type f > relatorio.txt
+          echo "Arquivos encontrados:"
+          cat relatorio.txt
+
+      - name: Salvar no GitHub
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add unity-extraido relatorio.txt
+          git commit -m "Extrair pacote Unity do Porsche" || echo "Sem alterações"
+          git push
