@@ -1,0 +1,134 @@
+
+name: Montar Porsche 911 GT3 RS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  montar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar arquivos do repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar Blender
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y blender
+
+      - name: Extrair FBX original do Unity
+        run: |
+          python3 - <<'PY'
+          import tarfile, os, shutil
+
+          package = "car.unitypackage"
+          os.makedirs("temp", exist_ok=True)
+
+          with tarfile.open(package, "r:gz") as tar:
+              members = tar.getmembers()
+              for member in members:
+                  if member.name.endswith("/pathname"):
+                      f = tar.extractfile(member)
+                      if f and f.read().decode("utf-8", "ignore").strip() == "Assets/01_070715SSCR_HD.fbx":
+                          folder = member.name.rsplit("/", 1)[0]
+                          asset = tar.extractfile(folder + "/asset")
+                          if asset:
+                              with open("temp/reference.fbx", "wb") as out:
+                                  shutil.copyfileobj(asset, out)
+                              print("FBX original encontrado!")
+                              break
+              else:
+                  raise SystemExit("FBX original nao encontrado no pacote.")
+          PY
+
+      - name: Criar script de montagem
+        run: |
+          cat > montar.py <<'PY'
+          import bpy, os, json
+
+          root = os.getcwd()
+          glb = os.path.join(root, "01_070715SSCR_HD.glb")
+          fbx = os.path.join(root, "temp/reference.fbx")
+          output = os.path.join(root, "resultado")
+          os.makedirs(output, exist_ok=True)
+
+          bpy.ops.wm.read_factory_settings(use_empty=True)
+
+          # Importa o GLB corrigido, que sera a geometria final.
+          bpy.ops.import_scene.gltf(filepath=glb)
+          glb_objects = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+          glb_names = [o.name for o in glb_objects]
+
+          # Importa o FBX apenas como referencia de materiais.
+          bpy.ops.import_scene.fbx(filepath=fbx)
+          fbx_objects = [o for o in bpy.context.scene.objects
+                         if o.type == "MESH" and o.name not in glb_names]
+
+          # Localiza texturas existentes no repositorio.
+          texture_files = {}
+          for filename in os.listdir(root):
+              if filename.lower().endswith((".png", ".jpg", ".jpeg")):
+                  texture_files[filename.lower()] = os.path.join(root, filename)
+
+          for image in bpy.data.images:
+              basename = os.path.basename(image.filepath).lower()
+              if basename in texture_files:
+                  image.filepath = texture_files[basename]
+                  try:
+                      image.reload()
+                  except:
+                      pass
+              if image.source == "FILE":
+                  try:
+                      image.pack()
+                  except:
+                      pass
+
+          # Registra materiais encontrados no FBX.
+          reference_materials = []
+          for obj in fbx_objects:
+              for slot in obj.material_slots:
+                  if slot.material and slot.material not in reference_materials:
+                      reference_materials.append(slot.material)
+
+          # Mantem a geometria GLB e remove os objetos FBX da cena.
+          for obj in fbx_objects:
+              bpy.data.objects.remove(obj, do_unlink=True)
+
+          # Evita atribuir materiais aleatoriamente.
+          # Os materiais do GLB sao mantidos quando nao ha correspondencia segura.
+          report = [
+              "Montagem do Porsche 911 GT3 RS",
+              f"Objetos GLB mantidos: {len(glb_objects)}",
+              f"Objetos FBX usados como referencia: {len(fbx_objects)}",
+              f"Materiais encontrados no FBX: {len(reference_materials)}",
+              f"Texturas encontradas no repositorio: {len(texture_files)}",
+              "",
+              "IMPORTANTE: os materiais nao foram associados automaticamente",
+              "porque os nomes e as partes podem nao corresponder com seguranca.",
+              "O FBX foi usado como referencia, nao como geometria final."
+          ]
+
+          # Exporta apenas a cena com a geometria corrigida.
+          bpy.ops.export_scene.gltf(
+              filepath=os.path.join(output, "porsche-candidato.glb"),
+              export_format="GLB",
+              export_materials="EXPORT"
+          )
+
+          with open(os.path.join(output, "relatorio-porsche.txt"), "w") as f:
+              f.write("\n".join(report))
+
+          print("\n".join(report))
+          PY
+
+      - name: Montar e exportar Porsche
+        run: |
+          blender -b -P montar.py
+
+      - name: Disponibilizar resultado
+        uses: actions/upload-artifact@v4
+        with:
+          name: Porsche-911-GT3-RS
+          path: resultado/
